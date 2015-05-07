@@ -19,10 +19,14 @@ package com.example.android.Bluetoothchat;
 import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.ServiceConnection;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Message;
+import android.os.IBinder;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.Menu;
@@ -45,18 +49,21 @@ import android.widget.Toast;
 public class BluetoothChat extends Activity {
     // Debugging
     private static final String TAG = "BluetoothChat";
-    private static final boolean D = true;//ÊÇ·ñ´òÓ¡ÈÕÖ¾
+    private static final boolean D = true;//ï¿½Ç·ï¿½ï¿½Ó¡ï¿½ï¿½Ö¾
 
     // Message types sent from the BluetoothChatService Handler
-    public static final int MESSAGE_STATE_CHANGE = 1;
-    public static final int MESSAGE_READ = 2;
-    public static final int MESSAGE_WRITE = 3;
-    public static final int MESSAGE_DEVICE_NAME = 4;
-    public static final int MESSAGE_TOAST = 5;
+    public static final String MESSAGE_STATE_CHANGE = "com.example.android.MSG_STATE_CHANGE";
+    public static final String MESSAGE_READ = "com.example.android.MSG_READ";
+    public static final String MESSAGE_WRITE = "com.example.android.MSG_WRITE";
+    public static final String MESSAGE_DEVICE_NAME = "com.example.android.MSG_DEVICE_NAME";
+    public static final String MESSAGE_TOAST = "com.example.android.MSG_TOAST";
 
     // Key names received from the BluetoothChatService Handler
-    public static final String DEVICE_NAME = "device_name";
-    public static final String TOAST = "toast";
+    public static final String TOAST = "com.example.android.TOAST";
+    public static final String DEVICE_NAME = "com.example.android.DEVICE_NAME";
+    public static final String STATE = "com.example.android.STATE";
+    public static final String CONTENT = "com.example.android.CONTENT";
+    public static final String LENGTH = "com.example.android.LENGTH";
 
     // Intent request codes
     private static final int REQUEST_CONNECT_DEVICE = 1;
@@ -74,19 +81,86 @@ public class BluetoothChat extends Activity {
     private ArrayAdapter<String> mConversationArrayAdapter;
     // String buffer for outgoing messages
     private StringBuffer mOutStringBuffer;
-    //±¾µØÀ¶ÑÀÉè±¸
+    //ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½è±¸
     private BluetoothAdapter mBluetoothAdapter = null;
     // Member object for the chat services
     private BluetoothChatService mChatService = null;
+    
+    private Intent mServiceIntent;
+    
+    private MyServiceConnection mConn = new MyServiceConnection();
+    
+    private BroadcastReceiver mReceiver = new BroadcastReceiver() {
 
+		@Override
+		public void onReceive(Context context, Intent intent) {
+			// TODO Auto-generated method stub
+			String action = intent.getAction();
+			if (action.equals(MESSAGE_STATE_CHANGE)) {
+				int state = intent.getIntExtra(STATE, BluetoothChatService.STATE_NONE);
+                Debug.d(TAG, "MESSAGE_STATE_CHANGE: " + state);
+                switch (state) {
+                case BluetoothChatService.STATE_CONNECTED:
+                    mTitle.setText(R.string.title_connected_to);
+                    mTitle.append(mConnectedDeviceName);
+                    mConversationArrayAdapter.clear();
+                    break;
+                case BluetoothChatService.STATE_CONNECTING:
+                    mTitle.setText(R.string.title_connecting);
+                    break;
+                case BluetoothChatService.STATE_LISTEN:
+                case BluetoothChatService.STATE_NONE:
+                    mTitle.setText(R.string.title_not_connected);
+                    break;
+                }
+			} else if (action.equals(MESSAGE_WRITE)) {
+                byte[] writeBuf = intent.getByteArrayExtra(CONTENT);
+                // construct a string from the buffer
+                String writeMessage = new String(writeBuf);
+                mConversationArrayAdapter.add("Me:  " + writeMessage);
+			} else if (action.equals(MESSAGE_READ)) {
+                byte[] readBuf = intent.getByteArrayExtra(CONTENT);
+                int length = intent.getIntExtra(LENGTH, 0);
+                // construct a string from the valid bytes in the buffer
+                String readMessage = new String(readBuf, 0, length);
+                mConversationArrayAdapter.add(mConnectedDeviceName+":  " + readMessage);
+			} else if (action.equals(MESSAGE_DEVICE_NAME)) {
+                // save the connected device's name
+                mConnectedDeviceName = intent.getStringExtra(DEVICE_NAME);
+                Toast.makeText(getApplicationContext(), "Connected to "
+                               + mConnectedDeviceName, Toast.LENGTH_SHORT).show();
+			} else if (action.equals(MESSAGE_TOAST)) {
+                Toast.makeText(getApplicationContext(), intent.getStringExtra(TOAST),
+                               Toast.LENGTH_SHORT).show();
+			}
+		}
+    };
+
+    private class MyServiceConnection implements ServiceConnection {
+
+		@Override
+		public void onServiceConnected(ComponentName name, IBinder service) {
+			// TODO Auto-generated method stub
+			if (service instanceof BluetoothChatService.BtChatBinder) {
+				mChatService = ((BluetoothChatService.BtChatBinder)service).getService();
+			}
+		}
+
+		@Override
+		public void onServiceDisconnected(ComponentName arg0) {
+			// TODO Auto-generated method stub
+			mChatService = null;
+		}
+    	
+    }
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        if(D) Log.e(TAG, "+++ ON CREATE +++");
+        Debug.d(TAG, "+++ ON CREATE +++");
 
 
-        //ÉèÖÃ½çÃæ
+        //ï¿½ï¿½ï¿½Ã½ï¿½ï¿½ï¿½
         requestWindowFeature(Window.FEATURE_CUSTOM_TITLE);
         setContentView(R.layout.main);
         getWindow().setFeatureInt(Window.FEATURE_CUSTOM_TITLE, R.layout.custom_title);
@@ -95,15 +169,23 @@ public class BluetoothChat extends Activity {
         mTitle = (TextView) findViewById(R.id.title_right_text);
 
         
-        //»ñÈ¡±¾µØÀ¶ÑÀÉè±¸
+        //ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½è±¸
         mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
 
-        //Éè±¸²»Ö§³ÖÀ¶ÑÀ
+        //ï¿½è±¸ï¿½ï¿½Ö§ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
         if (mBluetoothAdapter == null) {
-            Toast.makeText(this, "Éè±¸²»Ö§³ÖÀ¶ÑÀ£¬ÎÞÄÎÍË³ö", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "ï¿½è±¸ï¿½ï¿½Ö§ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ë³ï¿½", Toast.LENGTH_LONG).show();
             finish();
             return;
         }
+        
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(MESSAGE_DEVICE_NAME);
+        filter.addAction(MESSAGE_READ);
+        filter.addAction(MESSAGE_STATE_CHANGE);
+        filter.addAction(MESSAGE_TOAST);
+        filter.addAction(MESSAGE_WRITE);
+        registerReceiver(mReceiver, filter);
     }
 
     @Override
@@ -133,7 +215,10 @@ public class BluetoothChat extends Activity {
             // Only if the state is STATE_NONE, do we know that we haven't started already
             if (mChatService.getState() == BluetoothChatService.STATE_NONE) {
               // Start the Bluetooth chat services
-              mChatService.start();
+              //mChatService.start();
+            	mServiceIntent = new Intent(this, BluetoothChatService.class);
+            	this.startService(mServiceIntent);
+            	this.bindService(mServiceIntent, mConn, Context.BIND_AUTO_CREATE);
             }
         }
     }
@@ -162,7 +247,7 @@ public class BluetoothChat extends Activity {
         });
 
         // Initialize the BluetoothChatService to perform bluetooth connections
-        mChatService = new BluetoothChatService(this, mHandler);
+        mChatService = new BluetoothChatService();
 
         // Initialize the buffer for outgoing messages
         mOutStringBuffer = new StringBuffer("");
@@ -235,54 +320,6 @@ public class BluetoothChat extends Activity {
         }
     };
 
-    // The Handler that gets information back from the BluetoothChatService
-    private final Handler mHandler = new Handler() {
-        @Override
-        public void handleMessage(Message msg) {
-            switch (msg.what) {
-            case MESSAGE_STATE_CHANGE:
-                if(D) Log.i(TAG, "MESSAGE_STATE_CHANGE: " + msg.arg1);
-                switch (msg.arg1) {
-                case BluetoothChatService.STATE_CONNECTED:
-                    mTitle.setText(R.string.title_connected_to);
-                    mTitle.append(mConnectedDeviceName);
-                    mConversationArrayAdapter.clear();
-                    break;
-                case BluetoothChatService.STATE_CONNECTING:
-                    mTitle.setText(R.string.title_connecting);
-                    break;
-                case BluetoothChatService.STATE_LISTEN:
-                case BluetoothChatService.STATE_NONE:
-                    mTitle.setText(R.string.title_not_connected);
-                    break;
-                }
-                break;
-            case MESSAGE_WRITE:
-                byte[] writeBuf = (byte[]) msg.obj;
-                // construct a string from the buffer
-                String writeMessage = new String(writeBuf);
-                mConversationArrayAdapter.add("Me:  " + writeMessage);
-                break;
-            case MESSAGE_READ:
-                byte[] readBuf = (byte[]) msg.obj;
-                // construct a string from the valid bytes in the buffer
-                String readMessage = new String(readBuf, 0, msg.arg1);
-                mConversationArrayAdapter.add(mConnectedDeviceName+":  " + readMessage);
-                break;
-            case MESSAGE_DEVICE_NAME:
-                // save the connected device's name
-                mConnectedDeviceName = msg.getData().getString(DEVICE_NAME);
-                Toast.makeText(getApplicationContext(), "Connected to "
-                               + mConnectedDeviceName, Toast.LENGTH_SHORT).show();
-                break;
-            case MESSAGE_TOAST:
-                Toast.makeText(getApplicationContext(), msg.getData().getString(TOAST),
-                               Toast.LENGTH_SHORT).show();
-                break;
-            }
-        }
-    };
-
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
         if(D) Log.d(TAG, "onActivityResult " + resultCode);
         switch (requestCode) {
@@ -295,7 +332,7 @@ public class BluetoothChat extends Activity {
                 // Get the BLuetoothDevice object
                 BluetoothDevice device = mBluetoothAdapter.getRemoteDevice(address);
                 // Attempt to connect to the device
-                mChatService.connect(device);
+                mChatService.startConnectThread(device);
             }
             break;
         case REQUEST_ENABLE_BT:
@@ -331,6 +368,10 @@ public class BluetoothChat extends Activity {
             // Ensure this device is discoverable by others
             ensureDiscoverable();
             return true;
+        case R.id.exit:
+        	unbindService(mConn);
+        	stopService(mServiceIntent);
+        	this.finish();
         }
         return false;
     }
